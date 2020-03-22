@@ -1,3 +1,4 @@
+import sys
 import numpy as np
 import pylab as pl
 import emcee
@@ -41,21 +42,23 @@ def starting_point():
     return [loc, scale, amp, variance]
 
 
-data = np.loadtxt('count_vs_time.txt')
+input_file = sys.argv[1] if len(sys.argv) > 1 else 'count_vs_time_it.txt'
+
+data = np.loadtxt(input_file)
 
 time = np.arange(data.shape[0])
 counts = data[:,3]
 
 param_names = ['inf_time', 'scale', 'final_cases', 'variance']
 
-ndim, nwalkers = len(param_names), 100
+ndim, nwalkers = len(param_names), 200
 p0 = np.array([starting_point() for _ in range(nwalkers)])
 
 sampler = emcee.EnsembleSampler(nwalkers, ndim, ln_prob, args=[time, counts])
 
 # burn in
 print('Burn in')
-state = sampler.run_mcmc(p0, 1000)
+state = sampler.run_mcmc(p0, 10000)
 sampler.reset()
 
 # production run
@@ -66,7 +69,7 @@ sampler.run_mcmc(state[0], 10000)
 print("Mean acceptance fraction: {0:.3f}".format(np.mean(sampler.acceptance_fraction)))
 
 # trim samples
-chain = sampler.chain[:,::10,:]
+chain = sampler.chain[:,::100,:]
 
 # plot chain evolution
 for p in range(ndim):
@@ -75,19 +78,18 @@ for p in range(ndim):
         pl.plot(chain[w,:,p], '-', color='C0', alpha=0.1)
     pl.xlabel('Step')
     pl.ylabel(param_names[p])
+    pl.savefig('chains_{}.png'.format(param_names[p]), dpi=200)
 
 # plot data and model
 pl.figure()
 pl.plot(time, counts, 'o', label='Data')
 
-# plot starting models
-t = np.arange(70)
+t = np.arange(200)
 for i in range(100):
     label = 'Initial points' if i == 0 else None
     preds = model(t, starting_point())
     pl.plot(t, preds, '-', color='C1', alpha=0.1, label=label)
 
-# plot posterior model
 samples_loc = chain[:,:,0].ravel()
 samples_scale = chain[:,:,1].ravel()
 samples_amp = chain[:,:,2].ravel()
@@ -97,23 +99,30 @@ for j in range(100):
     preds = model(t, (samples_loc[i], samples_scale[i], samples_amp[i]))
     pl.plot(t, preds, '-', color='C2', alpha=0.1, label=label)
 
+pl.semilogy()
+pl.ylim(0.1, 70e6)
 pl.legend()
 pl.xlabel('Time (days since {:.0f}/{:.0f}/{:.0f})'.format(data[0,1], data[0,0], data[0,2]))
 pl.ylabel('Number of cases')
+pl.savefig('cases_vs_time.png', dpi=200)
 
+# plot marginal posterior for inflection point
 pl.figure()
-pl.hist(samples_loc, 1000, histtype='stepfilled')
+pl.hist(samples_loc, 500, histtype='stepfilled')
 pl.xlabel('Inflection point (days since {:.0f}/{:.0f}/{:.0f})'.format(data[0,1], data[0,0], data[0,2]))
 title = '{:.0f}-{:.0f}'.format(np.percentile(samples_loc, 5),
                                np.percentile(samples_loc, 95))
 pl.title(title)
+pl.savefig('inflection_time.png', dpi=200)
 
+# plot marginal posterior for asymptotic number of cases
 pl.figure()
-pl.hist(samples_amp, 1000, histtype='stepfilled')
-pl.xlabel('Final number of cases')
+pl.hist(samples_amp, 500, histtype='stepfilled')
+pl.xlabel('Asymptotic number of cases')
 title = '{:.0f}-{:.0f}'.format(np.percentile(samples_amp, 5),
                                np.percentile(samples_amp, 95))
 pl.title(title)
+pl.savefig('asymptotic_cases.png', dpi=200)
 
 # posterior corner plot
 ca = np.vstack((np.log10(samples_loc),
@@ -121,5 +130,4 @@ ca = np.vstack((np.log10(samples_loc),
                 np.log10(samples_amp))).T
 corner.corner(ca, bins=200, color='C0',
               labels=['log_10(' + pn + ')' for pn in param_names[:3]])
-
-pl.show()
+pl.savefig('corner.png', dpi=200)
