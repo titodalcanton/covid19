@@ -1,4 +1,5 @@
 import sys
+from datetime import date, timedelta
 import numpy as np
 import pylab as pl
 import emcee
@@ -31,13 +32,13 @@ def ln_prob(params, time, counts):
 
     # FIXME this is a simple Gaussian likelihood,
     # not appropriate for a correlated count time series
-    lnp = -np.sum((counts - preds) ** 2) / 2 / params[3] - len(time) / 2 * np.log(2 * np.pi * params[3])
+    lnp = -np.sum((counts - preds) ** 2) / 2 / params[3] - len(time) // 2 * np.log(2 * np.pi * params[3])
     return lnp
 
 def starting_point():
     loc = np.random.uniform(1, 365)
     scale = abs(4 + np.random.normal(0, 2))
-    amp = np.random.uniform(10000, 60e6)
+    amp = 10 ** np.random.uniform(np.log10(90000), np.log10(60e6))
     variance = np.random.uniform(0, 10000)
     return [loc, scale, amp, variance]
 
@@ -46,19 +47,24 @@ input_file = sys.argv[1] if len(sys.argv) > 1 else 'count_vs_time_it.txt'
 
 data = np.loadtxt(input_file)
 
+start_date = date(2000 + int(data[0,2]), int(data[0,0]), int(data[0,1]))
+
 time = np.arange(data.shape[0])
 counts = data[:,3]
+
+mask = counts > 10
 
 param_names = ['inf_time', 'scale', 'final_cases', 'variance']
 
 ndim, nwalkers = len(param_names), 200
 p0 = np.array([starting_point() for _ in range(nwalkers)])
 
-sampler = emcee.EnsembleSampler(nwalkers, ndim, ln_prob, args=[time, counts])
+sampler = emcee.EnsembleSampler(nwalkers, ndim, ln_prob,
+                                args=[time[mask], counts[mask]])
 
 # burn in
 print('Burn in')
-state = sampler.run_mcmc(p0, 10000)
+state = sampler.run_mcmc(p0, 30000)
 sampler.reset()
 
 # production run
@@ -66,7 +72,8 @@ print('Production sampling')
 sampler.run_mcmc(state[0], 10000)
 
 # check
-print("Mean acceptance fraction: {0:.3f}".format(np.mean(sampler.acceptance_fraction)))
+maf = np.mean(sampler.acceptance_fraction)
+print("Mean acceptance fraction: {0:.3f}".format(maf))
 
 # trim samples
 chain = sampler.chain[:,::100,:]
@@ -82,36 +89,42 @@ for p in range(ndim):
 
 # plot data and model
 pl.figure()
-pl.plot(time, counts, 'o', label='Data')
 
 t = np.arange(200)
-for i in range(100):
-    label = 'Initial points' if i == 0 else None
-    preds = model(t, starting_point())
-    pl.plot(t, preds, '-', color='C1', alpha=0.1, label=label)
-
 samples_loc = chain[:,:,0].ravel()
 samples_scale = chain[:,:,1].ravel()
 samples_amp = chain[:,:,2].ravel()
 for j in range(100):
     i = int(np.random.uniform(0, len(samples_loc)))
-    label = 'Posterior' if j == 0 else None
+    label = 'Model' if j == 0 else None
     preds = model(t, (samples_loc[i], samples_scale[i], samples_amp[i]))
-    pl.plot(t, preds, '-', color='C2', alpha=0.1, label=label)
+    pl.plot(t, preds, '-', color='C1', alpha=0.1, label=label)
+
+pl.plot(time, counts, '.', color='C0', label='Data')
+
+pl.axvspan(np.percentile(samples_loc, 5),
+           np.percentile(samples_loc, 95),
+           facecolor='C2', edgecolor='none', alpha=0.25)
+
+pl.axhspan(np.percentile(samples_amp, 5),
+           np.percentile(samples_amp, 95),
+           facecolor='C2', edgecolor='none', alpha=0.25)
 
 pl.semilogy()
-pl.ylim(0.1, 70e6)
+pl.ylim(0.9, 70e6)
 pl.legend()
-pl.xlabel('Time (days since {:.0f}/{:.0f}/{:.0f})'.format(data[0,1], data[0,0], data[0,2]))
+pl.xlabel('Time (days since {})'.format(start_date.strftime('%Y-%m-%d')))
 pl.ylabel('Number of cases')
 pl.savefig('cases_vs_time.png', dpi=200)
 
 # plot marginal posterior for inflection point
 pl.figure()
 pl.hist(samples_loc, 500, histtype='stepfilled')
-pl.xlabel('Inflection point (days since {:.0f}/{:.0f}/{:.0f})'.format(data[0,1], data[0,0], data[0,2]))
-title = '{:.0f}-{:.0f}'.format(np.percentile(samples_loc, 5),
-                               np.percentile(samples_loc, 95))
+pl.xlabel('Inflection point (days since {})'.format(start_date.strftime('%Y-%m-%d')))
+p5 = start_date + timedelta(days=np.percentile(samples_loc, 5))
+p95 = start_date + timedelta(days=np.percentile(samples_loc, 95))
+title = '90% interval: {} - {}'.format(p5.strftime('%Y-%m-%d'),
+                                        p95.strftime('%Y-%m-%d'))
 pl.title(title)
 pl.savefig('inflection_time.png', dpi=200)
 
@@ -119,8 +132,8 @@ pl.savefig('inflection_time.png', dpi=200)
 pl.figure()
 pl.hist(samples_amp, 500, histtype='stepfilled')
 pl.xlabel('Asymptotic number of cases')
-title = '{:.0f}-{:.0f}'.format(np.percentile(samples_amp, 5),
-                               np.percentile(samples_amp, 95))
+title = '90% interval: {:.0f} - {:.0f}'.format(np.percentile(samples_amp, 5),
+                                                np.percentile(samples_amp, 95))
 pl.title(title)
 pl.savefig('asymptotic_cases.png', dpi=200)
 
